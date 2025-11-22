@@ -7,14 +7,21 @@ import org.junit.jupiter.api.*;
 import java.awt.*;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Properties;
 import java.util.Random;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-
-public class v2_MOBI_1click_registration {
+public class v2_MOBI_phone_registration {
     static Playwright playwright;
     static Browser browser;
     static BrowserContext context;
@@ -103,11 +110,11 @@ public class v2_MOBI_1click_registration {
         }
 
         // 2) Универсальные крестики.
-        // Сначала приоритезируем модалки user-identification (привязка телефона и т.п.),
-        // потом всё остальное.
         String selectors = String.join(",",
+                // приоритетно — модалки идентификации / привязки телефона
                 "div.v-modal-user-identification button[aria-label='Закрыть']",
                 "div.v-modal-user-identification button[class*='__close']",
+                // затем все остальные
                 "div[role='dialog'] button[aria-label='Закрыть']",
                 "div[role='dialog'] button[class*='__close']",
                 "div[role='dialog'] button[class*='-close']",
@@ -159,9 +166,86 @@ public class v2_MOBI_1click_registration {
         return code.toString();
     }
 
+    // --- Google Messages session path resolver ---
+    static Path resolveMessagesSessionPath() {
+        Path projectRoot = Paths.get(System.getProperty("user.dir"));
+        Path[] possiblePaths = new Path[]{
+                projectRoot.resolve("resources/sessions/messages-session.json"),
+                projectRoot.resolve("src/test/resources/sessions/messages-session.json"),
+                projectRoot.resolve("src/test/java/org/example/resources/sessions/messages-session.json")
+        };
+
+        for (Path p : possiblePaths) {
+            if (p.toFile().exists()) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Открываем Google Messages с сохранённой сессией и вытаскиваем код из последнего сообщения.
+     */
+    static String getSmsCodeFromGoogleMessages() {
+        Path sessionPath = resolveMessagesSessionPath();
+        if (sessionPath == null) {
+            throw new RuntimeException("❌ Файл сессии Google Messages не найден!");
+        }
+
+        System.out.println("📁 Используем сессию: " + sessionPath.toAbsolutePath());
+
+        System.out.println("🔐 Открываем Google Messages...");
+        BrowserContext messagesContext = browser.newContext(
+                new Browser.NewContextOptions().setStorageStatePath(sessionPath)
+        );
+        Page messagesPage = messagesContext.newPage();
+        messagesPage.navigate("https://messages.google.com/web/conversations");
+
+        System.out.println("⌛ Ждём список чатов...");
+        for (int i = 0; i < 20; i++) {
+            if (messagesPage.locator("mws-conversation-list-item").count() > 0) break;
+            messagesPage.waitForTimeout(1000);
+        }
+
+        System.out.println("🔍 Ищем чат с 1xBet...");
+        Locator chat = messagesPage.locator("mws-conversation-list-item:has-text('1xbet'), mws-conversation-list-item:has-text('1xbet-kz')");
+        if (chat.count() == 0) {
+            chat = messagesPage.locator("mws-conversation-list-item").first();
+        }
+        chat.first().click();
+        messagesPage.waitForTimeout(2000);
+
+        System.out.println("📩 Ищем последнее сообщение...");
+        Locator msg = messagesPage.locator("div.text-msg-content div.text-msg.msg-content div.ng-star-inserted");
+        int count = 0;
+        for (int i = 0; i < 15; i++) {
+            count = msg.count();
+            if (count > 0) break;
+            messagesPage.waitForTimeout(1000);
+        }
+        if (count == 0) {
+            messagesContext.close();
+            throw new RuntimeException("❌ Сообщения не найдены в Google Messages!");
+        }
+
+        String lastMsg = msg.nth(count - 1).innerText().trim();
+        System.out.println("📨 Последнее сообщение: " + lastMsg);
+
+        Matcher matcher = Pattern.compile("\\b[a-zA-Z0-9]{4,8}\\b").matcher(lastMsg);
+        String code = matcher.find() ? matcher.group() : null;
+        if (code == null) {
+            messagesContext.close();
+            throw new RuntimeException("❌ Код не найден в сообщении!");
+        }
+        System.out.println("✅ Извлечённый код: " + code);
+
+        messagesContext.close();
+        return code;
+    }
+
     @BeforeAll
     static void setUpAll() throws IOException {
-        // креды
+        // --- Загружаем креды ---
         creds.load(new FileInputStream("src/test/resources/config.properties"));
 
         playwright = Playwright.create();
@@ -193,10 +277,27 @@ public class v2_MOBI_1click_registration {
 
         page = context.newPage();
         page.setDefaultTimeout(30_000);
+
+        // --- Проверяем сессию Google Messages ---
+        Path sessionPath = resolveMessagesSessionPath();
+        if (sessionPath != null) {
+            try {
+                BrowserContext messagesContext = browser.newContext(
+                        new Browser.NewContextOptions().setStorageStatePath(sessionPath)
+                );
+                messagesContext.close();
+                System.out.println("✅ Сессия Google Messages успешно загружена: " + sessionPath.toAbsolutePath());
+            } catch (Exception e) {
+                System.out.println("⚠️ Не удалось загрузить сохранённую сессию Google Messages. Проверь файл: "
+                        + sessionPath.toAbsolutePath() + " / " + e.getMessage());
+            }
+        } else {
+            System.out.println("⚠️ Файл сессии Google Messages не найден (проверены стандартные пути).");
+        }
     }
 
     @Test
-    void registration1ClickFullFlow() throws InterruptedException {
+    void registrationByPhoneFullFlow() throws InterruptedException {
         long startMs = System.currentTimeMillis();
         LocalDateTime startDateTime = LocalDateTime.now();
         String startedAt = startDateTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss"));
@@ -204,11 +305,13 @@ public class v2_MOBI_1click_registration {
         String botToken = creds.getProperty("telegram.bot.token");
         String chatId = creds.getProperty("telegram.chat.id");
 
-// переменные под креды
         String login = null;
         String password = null;
+        String promoCode = null;
+        String phone = null;
 
-        Telegram.send("🚀 *Тест v2_MOBI_1click_registration* стартовал\n(Регистрация 'В 1 клик')", botToken, chatId);
+        Telegram.send("🚀 *Тест v2_MOBI_phone_registration* стартовал\n(Регистрация 'По телефону')",
+                botToken, chatId);
 
         try {
             System.out.println("Открываем сайт (мобильная версия)...");
@@ -222,12 +325,47 @@ public class v2_MOBI_1click_registration {
             page.click("button.header-btn--registration");
             page.waitForTimeout(1000);
 
-            System.out.println("Выбираем вкладку 'В 1 клик'");
-            page.waitForSelector("button.c-registration__tab:has-text('В 1 клик')");
-            page.click("button.c-registration__tab:has-text('В 1 клик')");
+            System.out.println("Вводим номер телефона из конфига");
+            phone = creds.getProperty("phone");
+            if (phone == null || phone.isBlank()) {
+                throw new IllegalStateException("phone не задан в config.properties");
+            }
+            page.fill("input.phone-input__field", phone.trim());
+            page.waitForTimeout(500);
+
+            System.out.println("Жмём 'Отправить sms'");
+            page.waitForSelector("button#button_send_sms");
+            page.click("button#button_send_sms");
+            page.waitForTimeout(500);
+
+            System.out.println("Реши капчу вручную — я жду появления окна 'SMS отправлено' (Ок)...");
+            page.waitForSelector("button.swal2-confirm.swal2-styled",
+                    new Page.WaitForSelectorOptions()
+                            .setState(WaitForSelectorState.VISIBLE)
+                            .setTimeout(600_000));
+            System.out.println("Окно 'SMS отправлено' появилось, жмём 'Ок'");
+            page.click("button.swal2-confirm.swal2-styled");
+            page.waitForTimeout(500);
+
+            closeAllDialogsWithCross();
+
+            System.out.println("Получаем код из Google Messages");
+            String smsCode = getSmsCodeFromGoogleMessages();
+
+            System.out.println("Вводим код подтверждения из SMS");
+            page.waitForSelector("input#registration_phone_confirmation",
+                    new Page.WaitForSelectorOptions().setState(WaitForSelectorState.VISIBLE));
+            page.fill("input#registration_phone_confirmation", smsCode);
+            page.waitForTimeout(500);
+
+            System.out.println("Жмём 'Подтвердить'");
+            page.waitForSelector("button.confirm_sms",
+                    new Page.WaitForSelectorOptions().setState(WaitForSelectorState.VISIBLE));
+            page.click("button.confirm_sms");
             page.waitForTimeout(1000);
 
-            String promoCode = generatePromoCode();
+            // --- Далее всё как в регистрации 'В 1 клик': промокод, бонусы, регистрация ---
+            promoCode = generatePromoCode();
             System.out.println("Генерируем промокод: " + promoCode);
             page.fill("input#registration_ref_code", promoCode);
             page.waitForTimeout(1000);
@@ -246,8 +384,7 @@ public class v2_MOBI_1click_registration {
             System.out.println("Жмём 'Зарегистрироваться'");
             page.click("div.submit_registration");
 
-            // ---- ЖДЁМ РЕШЕНИЯ КАПЧИ И ПОЯВЛЕНИЯ БЛОКА С ЛОГИНОМ/ПАРОЛЕМ ----
-            System.out.println("Теперь решай капчу вручную — я жду появление блока с кнопкой 'Копировать' (до 10 минут)...");
+            System.out.println("Жду появление блока с кнопкой 'Копировать' (до 10 минут)...");
             try {
                 page.waitForSelector(
                         "div#js-post-reg-copy-login-password",
@@ -257,24 +394,20 @@ public class v2_MOBI_1click_registration {
                 );
                 System.out.println("Блок с 'Копировать' появился ✅");
             } catch (PlaywrightException e) {
-                throw new RuntimeException("Блок с 'Копировать' не появился — капча не решена или что-то пошло не так!");
+                throw new RuntimeException("Блок с 'Копировать' не появился — что-то пошло не так!");
             }
 
-            // --- ИЗВЛЕКАЕМ КРЕДЫ ---
             System.out.println("Читаем логин и пароль...");
             Locator loginLocator = page.locator("p#account-info-id");
             Locator passwordLocator = page.locator("p#account-info-password");
-
             loginLocator.waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout(5_000));
             passwordLocator.waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout(5_000));
-
             login = loginLocator.innerText().trim();
             password = passwordLocator.innerText().trim();
-
             System.out.println("Логин: " + login + ", Пароль: " + password);
 
             System.out.println("Нажимаем 'Копировать' логин/пароль");
@@ -291,7 +424,7 @@ public class v2_MOBI_1click_registration {
             page.click("button#account-info-button-sms");
             page.waitForTimeout(500);
             closeIfVisible("button.reset-password__close", "reset-password__close");
-            closeAllDialogsWithCross(); // тут могут всплывать идентификация / привязка телефона
+            closeAllDialogsWithCross();
 
             System.out.println("Сохраняем в файл");
             page.waitForSelector("a#account-info-button-file");
@@ -318,10 +451,8 @@ public class v2_MOBI_1click_registration {
             page.click("button.js-post-email-content-form__btn:not([disabled])");
             page.waitForTimeout(500);
 
-            // После отправки email можно снова чистить лишние модалки
             closeAllDialogsWithCross();
 
-            // --- НОВЫЙ БЛОК: жмём "Продолжить" и при необходимости "Пройти идентификацию" ---
             System.out.println("Жмём 'Продолжить'");
             page.waitForSelector("a#continue-button-after-reg",
                     new Page.WaitForSelectorOptions().setState(WaitForSelectorState.VISIBLE));
@@ -365,8 +496,9 @@ public class v2_MOBI_1click_registration {
 
             long durationSec = (System.currentTimeMillis() - startMs) / 1000;
 
-            String summary = "✅ *Тест успешно:* v2_MOBI_1click_registration\n"
-                    + "• Регистрация: 'В 1 клик'\n"
+            String summary = "✅ *Тест успешно:* v2_MOBI_phone_registration\n"
+                    + "• Регистрация: 'По телефону'\n"
+                    + "• Номер: `" + phone + "`\n"
                     + "• Промокод: `" + promoCode + "`\n"
                     + "🔑 *Данные аккаунта:*\n"
                     + "• Логин: `" + login + "`\n"
@@ -375,14 +507,13 @@ public class v2_MOBI_1click_registration {
                     + "⏱ Длительность: " + durationSec + " сек.\n"
                     + "🌐 [1xbet.kz](https://1xbet.kz)";
 
-// ВАЖНО: экранируем подчёркивания для Telegram Markdown
             summary = summary.replace("_", "\\_");
 
             System.out.println(summary);
             Telegram.send(summary, botToken, chatId);
 
         } catch (Exception e) {
-            String err = "❌ *Тест v2_MOBI_1click_registration упал*\n"
+            String err = "❌ *Тест v2_MOBI_phone_registration упал*\n"
                     + "Сообщение: `" + (e.getMessage() == null ? "null" : e.getMessage().replace("_", "\\_")) + "`";
             System.out.println(err);
             Telegram.send(err, botToken, chatId);
@@ -407,27 +538,25 @@ public class v2_MOBI_1click_registration {
 
                 StringBuilder data = new StringBuilder();
                 data.append("chat_id=").append(chatId)
-                        .append("&text=").append(java.net.URLEncoder.encode(text, "UTF-8"));
+                        .append("&text=").append(URLEncoder.encode(text, "UTF-8"));
                 if (markdown) {
                     data.append("&parse_mode=Markdown");
                 }
 
-                java.net.http.HttpResponse<String> resp =
-                        java.net.http.HttpClient.newHttpClient().send(
-                                java.net.http.HttpRequest.newBuilder()
-                                        .uri(java.net.URI.create(url))
-                                        .header("Content-Type", "application/x-www-form-urlencoded")
-                                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(data.toString()))
-                                        .build(),
-                                java.net.http.HttpResponse.BodyHandlers.ofString()
-                        );
+                HttpResponse<String> resp = HttpClient.newHttpClient().send(
+                        HttpRequest.newBuilder()
+                                .uri(java.net.URI.create(url))
+                                .header("Content-Type", "application/x-www-form-urlencoded")
+                                .POST(HttpRequest.BodyPublishers.ofString(data.toString()))
+                                .build(),
+                        HttpResponse.BodyHandlers.ofString()
+                );
 
                 if (resp.statusCode() != 200) {
                     System.out.println("⚠️ Telegram HTTP " + resp.statusCode()
                             + " / body: " + resp.body());
                     if (markdown) {
                         System.out.println("→ Повторяем без Markdown");
-                        // вторая попытка — без parse_mode
                         sendInternal(text, botToken, chatId, false);
                     }
                 } else {
