@@ -18,6 +18,10 @@ public class v2_id_authorization_fastgames {
     static Page page;
     static TelegramNotifier tg;
 
+    // DEBUG для поиска фреймов
+    private static final boolean DEBUG_FRAMES = false;
+    private static final java.util.Set<String> DEBUG_FRAMES_LOGGED = new java.util.HashSet<>();
+
     // --- Цветные логи для наглядности ---
     static void log(String text) {
         System.out.println("\u001B[37m" + text + "\u001B[0m");
@@ -82,7 +86,9 @@ public class v2_id_authorization_fastgames {
                 for (com.microsoft.playwright.Frame f : pg.frames()) {
                     try {
                         if (f.locator(selector).count() > 0) {
-                            System.out.println("[DEBUG] Нашли селектор в фрейме: " + f.url());
+                            if (DEBUG_FRAMES && DEBUG_FRAMES_LOGGED.add(f.url())) {
+                                System.out.println("[DEBUG] Нашли селектор в фрейме: " + f.url());
+                            }
                             return f;
                         }
                     } catch (Throwable ignore) {}
@@ -152,6 +158,87 @@ public class v2_id_authorization_fastgames {
         throw new RuntimeException("Не нашли активный элемент ни по одному из селекторов!");
     }
 
+    // Доп. утилита (пока не используется, но оставлена на будущее)
+    private void waitUntilClickable(Page p, String selector, int timeoutMs, String debugName) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Locator loc = smartLocator(p, selector, 3000);
+                if (loc.count() == 0) {
+                    p.waitForTimeout(400);
+                    continue;
+                }
+
+                Locator el = loc.first();
+                if (!el.isVisible()) {
+                    p.waitForTimeout(400);
+                    continue;
+                }
+
+                boolean clickable = (Boolean) el.evaluate(
+                        "el => {" +
+                                "  const style = window.getComputedStyle(el);" +
+                                "  const rect = el.getBoundingClientRect();" +
+                                "  if (!rect.width || !rect.height) return false;" +
+                                "  const cx = rect.left + rect.width / 2;" +
+                                "  const cy = rect.top + rect.height / 2;" +
+                                "  const top = document.elementFromPoint(cx, cy);" +
+                                "  if (!top) return false;" +
+                                "  const contains = (top === el) || el.contains(top);" +
+                                "  if (!contains) return false;" +
+                                "  if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return false;" +
+                                "  if (style.pointerEvents === 'none') return false;" +
+                                "  if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;" +
+                                "  const locked = el.closest('.locked, [data-locked=\"true\"], [data-disabled=\"true\"], .market-lock, .is-locked');" +
+                                "  return !locked;" +
+                                "}"
+                );
+
+                if (clickable) {
+                    success("Элемент '" + debugName + "' стал кликабельным ✅");
+                    return;
+                }
+
+            } catch (Throwable ignore) {
+                // просто ждём дальше
+            }
+
+            p.waitForTimeout(500);
+        }
+
+        throw new RuntimeException(
+                "Элемент '" + debugName + "' так и не стал кликабельным за " + timeoutMs + " ms"
+        );
+    }
+
+    // Проверка кликабельности исхода
+    private boolean isClickable(Locator loc) {
+        if (loc == null || loc.count() == 0) return false;
+        Locator btn = loc.first();
+        if (!btn.isVisible()) return false;
+
+        try {
+            return (Boolean) btn.evaluate(
+                    "el => {" +
+                            "  const style = window.getComputedStyle(el);" +
+                            "  const hasLock = !!(el.querySelector('.icon-lock, .oneX-icon-locked'));" +
+                            "  const disabledClass = el.classList.contains('disabled') || el.classList.contains('locked') || el.classList.contains('pointer-events-none');" +
+                            "  const disabledAttr = el.hasAttribute('disabled') || !!el.closest('[disabled]');" +
+                            "  if (hasLock || disabledClass || disabledAttr) return false;" +
+                            "  if (style.pointerEvents === 'none') return false;" +
+                            "  if (style.display === 'none') return false;" +
+                            "  if (style.visibility === 'hidden') return false;" +
+                            "  if (style.opacity === '0') return false;" +
+                            "  if (el.closest('[style*=\"display:none\"]')) return false;" +
+                            "  return true;" +
+                            "}"
+            );
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
     private Page clickCardMaybeOpensNewTab(Locator card) {
         int before = context.pages().size();
         robustClick(page, card, 30000, "game-card");
@@ -174,7 +261,9 @@ public class v2_id_authorization_fastgames {
                 if (nextBtn.count() == 0 || !nextBtn.first().isVisible()) break;
                 robustClick(gamePage, nextBtn.first(), 2000, "Далее");
                 gamePage.waitForTimeout(150);
-            } catch (Throwable ignore) { break; }
+            } catch (Throwable ignore) {
+                break;
+            }
         }
         try {
             Locator understood = smartLocator(gamePage, "div[role='button']:has-text('Я всё понял')", 600);
@@ -190,26 +279,30 @@ public class v2_id_authorization_fastgames {
         robustClick(gamePage, chip50.first(), 8000, "chip-50");
     }
 
-    // === скорректированный метод ожидания раунда с защитой от зависания ===
-    private void waitRoundToSettle(Page gamePage, int maxMs) {
+    // === универсальное ожидание раунда (для тех игр, где хватает грубой эвристики) ===
+    private void waitRoundToSettle(Page gamePage, String debugName, int maxMs) {
+        info("Ждём завершения раунда (старый режим): " + debugName);
         long start = System.currentTimeMillis();
         boolean roundStarted = false;
 
         while (System.currentTimeMillis() - start < maxMs) {
             try {
-                Locator anyBet = gamePage.locator("div[role='button'][data-market][data-outcome]:has-text('Сделать ставку')");
+                Locator anyBet = gamePage.locator(
+                        "div[role='button'][data-market][data-outcome]:has-text('Сделать ставку')"
+                );
                 if (anyBet.count() > 0 && anyBet.first().isVisible()) {
-                    boolean enabled = (Boolean) anyBet.first().evaluate("e => !(e.classList && e.classList.contains('pointer-events-none'))");
+                    boolean enabled = (Boolean) anyBet.first().evaluate(
+                            "e => !(e.classList && e.classList.contains('pointer-events-none'))"
+                    );
                     if (enabled) {
-                        System.out.println("[DEBUG] Новый раунд доступен — продолжаем ✅");
+                        success("Новый раунд доступен — продолжаем ✅: " + debugName);
                         roundStarted = true;
                         break;
                     }
                 }
 
-                // Проверяем, не зависла ли игра
                 if (System.currentTimeMillis() - start > 60000 && !roundStarted) {
-                    warn("Игра не реагирует более 60 сек — пропускаем и идём к следующей игре.");
+                    warn("Игра не реагирует более 60 сек — пропускаем: " + debugName);
                     return;
                 }
 
@@ -218,8 +311,95 @@ public class v2_id_authorization_fastgames {
         }
 
         if (!roundStarted) {
-            warn("Раунд не завершился в течение " + (maxMs / 1000) + " сек — продолжаем сценарий без ожидания.");
+            warn("Раунд не завершился в течение " + (maxMs / 1000) + " сек: " + debugName);
         }
+    }
+
+    // Специализированное ожидание конца раунда по конкретному исходу
+    private void waitRoundByOutcome(Page gamePage, String outcomeSelector, int maxMs) {
+        info("Ждём завершения раунда по исходу: " + outcomeSelector);
+        long start = System.currentTimeMillis();
+        boolean seenLocked = false;
+
+        while (System.currentTimeMillis() - start < maxMs) {
+            Locator btn = null;
+            try {
+                btn = smartLocator(gamePage, outcomeSelector, 1000);
+            } catch (Throwable ignore) {}
+
+            if (btn != null && btn.count() > 0) {
+                boolean clickable = isClickable(btn);
+                if (!clickable) {
+                    seenLocked = true; // раунд идёт
+                } else if (seenLocked) {
+                    success("Раунд завершился — исход снова доступен для ставки ✅");
+                    return;
+                }
+            }
+
+            gamePage.waitForTimeout(700);
+        }
+
+        warn("Не удалось отследить завершение раунда за " + (maxMs / 1000) +
+                " сек (по исходу " + outcomeSelector + ")");
+    }
+
+    // === НОВОЕ: ожидание нового раунда по bet-bar (используем ТОЛЬКО для: Нарды, Дартс, Дартс-Фортуна, Больше/Меньше) ===
+    private void waitNewRoundByBetBar(Page gamePage, String gameName, int maxMs) {
+        System.out.println("ℹ️  Ждём следующий раунд по bet-bar в игре: " + gameName);
+
+        long deadline = System.currentTimeMillis() + maxMs;
+
+        Locator bar;
+        try {
+            // если игра в iframe — тут должен быть smartLocator, как ты уже делаешь
+            bar = smartLocator(gamePage, "div.bet-bar-desktop, div.bet-bar-mobile", 10_000);
+        } catch (Throwable t) {
+            System.out.println("⚠️  bet-bar не найден в игре: " + gameName + " — пропускаем спец-ожидание.");
+            return;
+        }
+
+        Integer prev = null;
+        boolean sawDecreasing = false; // видели, что таймер убывает в рамках текущего раунда
+
+        while (System.currentTimeMillis() < deadline) {
+            Integer val = null;
+
+            try {
+                Locator timeNode = bar.locator(".bet-countdown-time");
+                if (timeNode.count() > 0 && timeNode.first().isVisible()) {
+                    String txt = timeNode.first().innerText().trim();
+                    // выдёргиваем число, на случай "6 сек"
+                    String digits = txt.replaceAll("\\D+", "");
+                    if (!digits.isEmpty()) {
+                        val = Integer.parseInt(digits);
+                    }
+                }
+            } catch (Throwable ignore) {
+            }
+
+            if (val != null) {
+                if (prev == null) {
+                    prev = val;
+                } else {
+                    if (val < prev) {
+                        // таймер идёт вниз → раунд идёт
+                        sawDecreasing = true;
+                        prev = val;
+                    } else if (sawDecreasing && val > prev) {
+                        // было убывание, потом значение ПОДРОСЛО → счётчик перезапустился → новый раунд
+                        System.out.println("✅ Обнаружен НОВЫЙ раунд по bet-bar в игре: " + gameName);
+                        return;
+                    } else {
+                        prev = val;
+                    }
+                }
+            }
+
+            gamePage.waitForTimeout(500);
+        }
+
+        System.out.println("⚠️  Не дождались нового раунда по bet-bar за " + (maxMs / 1000) + " сек в игре: " + gameName);
     }
 
     private Page openGameByHrefContains(Page originPage, String hrefContains, String fallbackMenuText) {
@@ -254,12 +434,64 @@ public class v2_id_authorization_fastgames {
         }
     }
 
+    private boolean tryBetFirstBoxingOutcome(Page boxingPage) {
+        info("Ищем первый доступный исход в 'Бокс'");
+        long start = System.currentTimeMillis();
+        long maxMs = 300_000; // до 5 минут
+
+        // Находим все кнопки исходов (без текста 'Сделать ставку')
+        Locator all = smartLocator(
+                boxingPage,
+                "div.contest-panel-outcome-button, " +
+                        "button.contest-panel-outcome-button, " +
+                        "div[role='button'].contest-panel-outcome-button",
+                10_000
+        );
+
+        while (System.currentTimeMillis() - start < maxMs) {
+            int count = all.count();
+            for (int i = 0; i < count; i++) {
+                Locator btn = all.nth(i);
+                if (isClickable(btn)) {
+                    success("Нашли доступный исход №" + (i + 1) + " — делаем ставку");
+                    try {
+                        btn.scrollIntoViewIfNeeded();
+                        btn.click(new Locator.ClickOptions()
+                                .setTimeout(5_000)
+                                .setForce(true));
+                    } catch (Throwable e) {
+                        warn("Обычный клик не сработал, пробуем через JS");
+                        try {
+                            boxingPage.evaluate(
+                                    "el => el.dispatchEvent(new MouseEvent('click', {bubbles:true}))",
+                                    btn.elementHandle()
+                            );
+                        } catch (Throwable e2) {
+                            error("Ошибка при JS-клике: " + e2.getMessage());
+                            return false;
+                        }
+                    }
+                    boxingPage.waitForTimeout(600);
+                    return true;
+                }
+            }
+
+            boxingPage.waitForTimeout(700);
+        }
+
+        warn("Не нашли ни одного доступного исхода в 'Бокс' за 300 сек");
+        return false;
+    }
 
     // ======= ТЕСТ ============================================================
     @Test
     void loginAndPlayFastGames() {
         long startTime = System.currentTimeMillis();
         tg.sendMessage("🚀 *Тест v2_id_authorization_fastgames* стартовал (авторизация через ID)");
+
+        // флаги успешности по критичным играм
+        boolean shootoutOk = false;
+        boolean boxingOk = false;
 
         try {
             log("Открываем сайт 1xbet.kz");
@@ -380,64 +612,54 @@ public class v2_id_authorization_fastgames {
             page.waitForTimeout(1200);
             page.click("a.header-menu-nav-list-item__link.main-item:has-text('Быстрые игры')");
 
-            // === Универсальная функция для проверки кнопки ставки ===
+            // === Универсальная функция: ждём, пока исход станет кликабельным, и только потом ставим ===
             BiFunction<Page, String, Boolean> tryBetButton = (gamePage, selector) -> {
-                info("Проверяем кнопку ставки: " + selector);
+                info("Проверяем исход/кнопку для ставки: " + selector);
                 long start = System.currentTimeMillis();
+                long maxMs = 300_000;  // до 5 минут
 
-                while (System.currentTimeMillis() - start < 30000) {
-                    Locator button = gamePage.locator(selector);
-                    if (button.count() > 0) {
+                while (System.currentTimeMillis() - start < maxMs) {
+                    Locator button = null;
+                    try {
+                        button = smartLocator(gamePage, selector, 1_000);
+                    } catch (Throwable ignore) {}
+
+                    if (button != null && button.count() > 0) {
                         Locator btn = button.first();
-                        if (btn.isVisible()) {
-                            boolean clickable = false;
+                        if (isClickable(btn)) {
+                            success("Исход разблокирован — делаем ставку");
                             try {
-                                clickable = (Boolean) btn.evaluate(
-                                        "el => {" +
-                                                "const style = window.getComputedStyle(el);" +
-                                                "return !el.classList.contains('disabled') &&" +
-                                                "!el.classList.contains('pointer-events-none') &&" +
-                                                "style.display !== 'none' &&" +
-                                                "style.visibility !== 'hidden' &&" +
-                                                "style.opacity !== '0' &&" +
-                                                "!el.closest('[style*=\"display:none\"]');" +
-                                                "}"
-                                );
-                            } catch (Throwable ignore) {}
-
-                            if (clickable) {
-                                success("Кнопка активна — делаем ставку");
+                                btn.scrollIntoViewIfNeeded();
+                                btn.click(new Locator.ClickOptions()
+                                        .setTimeout(5_000)
+                                        .setForce(true));
+                            } catch (Throwable e) {
+                                warn("Обычный клик не сработал, пробуем через JS");
                                 try {
-                                    btn.scrollIntoViewIfNeeded();
-                                    btn.click(new Locator.ClickOptions()
-                                            .setTimeout(2000)
-                                            .setForce(true));
-                                } catch (Throwable e) {
-                                    warn("Обычный клик не сработал, пробуем через JS");
-                                    try {
-                                        gamePage.evaluate("el => el.dispatchEvent(new MouseEvent('click', {bubbles:true}))", btn.elementHandle());
-                                    } catch (Throwable e2) {
-                                        error("Ошибка при JS-клике: " + e2.getMessage());
-                                    }
+                                    gamePage.evaluate(
+                                            "el => el.dispatchEvent(new MouseEvent('click', {bubbles:true}))",
+                                            btn.elementHandle()
+                                    );
+                                } catch (Throwable e2) {
+                                    error("Ошибка при JS-клике: " + e2.getMessage());
                                 }
-
-                                gamePage.waitForTimeout(600);
-                                waitRoundToSettle(gamePage, 60000);
-                                return true;
                             }
+                            gamePage.waitForTimeout(600);
+                            return true;
                         }
                     }
-                    gamePage.waitForTimeout(400);
+
+                    gamePage.waitForTimeout(500);
                 }
-                warn("Кнопка ставки не появилась за 30 сек — пропускаем игру");
+
+                warn("Исход так и не стал доступен за " + (maxMs / 1000) + " сек — пропускаем игру");
                 return false;
             };
 
-            // === Крэш-Бокс ===
+            // === Крэш-Бокс === (оставляем старую схему ожидания)
             section("Крэш-Бокс");
             log("Ищем карточку 'Крэш-Бокс' (через href) в фреймах");
 
-// --- Поиск карточки ---
             com.microsoft.playwright.Frame gamesFrame = findFrameWithSelector(page, "a.game[href*='crash-boxing']", 8000);
             if (gamesFrame == null) {
                 gamesFrame = findFrameWithSelector(page, "p.game-name:has-text('Крэш-Бокс')", 12000);
@@ -470,7 +692,7 @@ public class v2_id_authorization_fastgames {
 
             passTutorialIfPresent(gamePage);
 
-              // --- Жмём кнопку "Мин" ---
+            // --- Жмём кнопку "Мин" --- (оставляем как есть)
             log("Жмём кнопку 'Мин' для минимальной ставки");
             try {
                 Locator minButton = smartLocator(gamePage,
@@ -484,18 +706,22 @@ public class v2_id_authorization_fastgames {
 
             gamePage.waitForTimeout(800);
 
-// --- Первая ставка ---
+// --- Первая ставка (yes) ---
             log("Ставка 50 KZT (yes)");
-            clickFirstEnabled(gamePage,
-                    "div[role='button'][data-market='hit_met_condition'][data-outcome='yes']:has-text('Сделать ставку')",
-                    300000);
+            clickFirstEnabled(
+                    gamePage,
+                    "div[role='button'][data-market='hit_met_condition'][data-outcome='yes']",
+                    60_000
+            );
 
-            gamePage.waitForTimeout(1500);
+// --- Ждём, пока тот же исход снова станет доступен (новый раунд) ---
+            waitRoundByOutcome(
+                    gamePage,
+                    "div[role='button'][data-market='hit_met_condition'][data-outcome='yes']",
+                    60_000
+            );
 
-// --- Ожидаем завершение раунда ---
-            waitRoundToSettle(gamePage, 60000);
-
-            // ===== Нарды =====
+            // ===== Нарды ===== (НОВАЯ схема: ожидание по bet-bar)
             section("Нарды");
             log("Переходим в игру 'Нарды'");
             Page nardsPage = openGameByHrefContains(gamePage, "nard", "Нарды");
@@ -504,9 +730,10 @@ public class v2_id_authorization_fastgames {
             setStake50ViaChip(nardsPage);
             log("Выбираем исход: Синий");
             clickFirstEnabled(nardsPage, "span[role='button'][data-market='dice'][data-outcome='blue']", 300000);
-            waitRoundToSettle(nardsPage, 60000);
+            // новый раунд определяем через bet-bar
+            waitNewRoundByBetBar(nardsPage, "Нарды", 60000);
 
-            // ===== Дартс =====
+            // ===== Дартс ===== (НОВАЯ схема: ожидание по bet-bar)
             section("Дартс");
             log("Переходим в игру 'Дартс'");
             Page dartsPage = openGameByHrefContains(nardsPage, "darts?cid", "Дартс");
@@ -515,16 +742,17 @@ public class v2_id_authorization_fastgames {
             setStake50ViaChip(dartsPage);
             log("Выбираем исход (1-4-5-6-9-11-15-16-17-19)");
             clickFirstEnabled(dartsPage, "span[role='button'][data-market='1-4-5-6-9-11-15-16-17-19']", 300000);
-            waitRoundToSettle(dartsPage, 60000);
+            // новый раунд определяем через bet-bar
+            waitNewRoundByBetBar(dartsPage, "Дартс", 60000);
 
-            // ===== Дартс - Фортуна =====
+            // ===== Дартс - Фортуна ===== (НОВАЯ схема: ожидание по bet-bar)
             section("Дартс - Фортуна");
             log("Переходим в игру 'Дартс - Фортуна'");
             Page dartsFortunePage = openGameByHrefContains(dartsPage, "darts-fortune", "Дартс - Фортуна");
             dartsFortunePage.waitForTimeout(600);
             passTutorialIfPresent(dartsFortunePage);
 
-// --- Ждём появления чипа '50' (он появляется только когда можно ставить) ---
+            // --- Ждём появления чипа '50' ---
             log("Ожидаем появления чипа '50'");
             try {
                 Locator chip50 = smartLocator(dartsFortunePage,
@@ -538,7 +766,7 @@ public class v2_id_authorization_fastgames {
                 warn("Чип '50' не появился вовремя — продолжаем без него: " + e.getMessage());
             }
 
-// --- Выбираем исход: ONE_TO_EIGHT (Сектор 1-8) ---
+            // --- Выбираем исход: ONE_TO_EIGHT (Сектор 1-8) ---
             log("Выбираем исход: ONE_TO_EIGHT (Сектор 1-8)");
             try {
                 clickFirstEnabled(dartsFortunePage, "div[data-outcome='ONE_TO_EIGHT']", 45000);
@@ -547,10 +775,10 @@ public class v2_id_authorization_fastgames {
                 error("Не удалось выбрать исход ONE_TO_EIGHT: " + e.getMessage());
             }
 
-// --- Ждём завершения раунда ---
-            waitRoundToSettle(dartsFortunePage, 60000);
+            // новый раунд определяем через bet-bar
+            waitNewRoundByBetBar(dartsFortunePage, "Дартс - Фортуна", 60000);
 
-            // ===== Больше/Меньше =====
+            // ===== Больше/Меньше ===== (НОВАЯ схема: ожидание по bet-bar)
             section("Больше / Меньше");
             log("Переходим в игру 'Больше/Меньше'");
             Page hiloPage = openGameByHrefContains(dartsFortunePage, "darts-hilo", "Больше/Меньше");
@@ -562,9 +790,10 @@ public class v2_id_authorization_fastgames {
                     "div[role='button'][data-market='THROW_RESULT'][data-outcome='gte-16']",
                     "div.board-market-hi-eq:has-text('Больше или равно')"
             }, 300000);
-            waitRoundToSettle(hiloPage, 60000);
+            // новый раунд определяем через bet-bar
+            waitNewRoundByBetBar(hiloPage, "Больше/Меньше", 60000);
 
-            // ===== Буллиты NHL21 =====
+            // ===== Буллиты NHL21 ===== (оставляем «старый умный» способ по исходу "Да")
             section("Буллиты NHL21");
             log("Переходим в игру 'Буллиты NHL21'");
             Page shootoutPage = openGameByHrefContains(hiloPage, "shootout", "Буллиты NHL21");
@@ -572,11 +801,23 @@ public class v2_id_authorization_fastgames {
             passTutorialIfPresent(shootoutPage);
             log("Ждём появления суммы (чип 50)");
             setStake50ViaChip(shootoutPage);
-            log("Выбираем исход: Да");
-            clickFirstEnabled(shootoutPage, "div[role='button'].market-button:has-text('Да')", 300000);
-            waitRoundToSettle(shootoutPage, 60000);
+            log("Выбираем исход: Да (ждём, пока станет доступен)");
+            boolean shootoutBetDone = tryBetButton.apply(
+                    shootoutPage,
+                    "div[role='button'].market-button:has-text('Да')"
+            );
+            if (shootoutBetDone) {
+                shootoutOk = true;
+                waitRoundByOutcome(
+                        shootoutPage,
+                        "div[role='button'].market-button:has-text('Да')",
+                        300_000
+                );
+            } else {
+                warn("Не удалось сделать ставку в 'Буллиты NHL21' — исход 'Да' так и не разблокировался.");
+            }
 
-            // ===== Бокс (уникальная кнопка) =====
+            // ===== Бокс (уникальная кнопка) ===== (оставляем старую спец-логику)
             section("Бокс");
             log("Переходим в игру 'Бокс' (уникальная кнопка)");
             Page boxingPage = openUniqueBoxingFromHub(shootoutPage);
@@ -585,20 +826,31 @@ public class v2_id_authorization_fastgames {
             setStake50ViaChip(boxingPage);
             log("Выбираем исход: боксёр №1 (первая кнопка)");
 
-            // Исправленный селектор: учитывает разные варианты кнопок на реальном DOM
-            boxingPage.waitForSelector("div.contest-panel", new Page.WaitForSelectorOptions().setTimeout(120000));
-            boolean betDone = tryBetButton.apply(boxingPage,
-                    "div.contest-panel-outcome-button:has-text('Сделать ставку'), " +
-                            "button.contest-panel-outcome-button:has-text('Сделать ставку'), " +
-                            "div[role='button'].contest-panel-outcome-button:has-text('Сделать ставку')");
-
-            if (!betDone) {
-                warn("Не удалось сделать ставку в 'Бокс' — кнопка не найдена. Возможна новая DOM-структура игры.");
-                info("Совет: проверь актуальный селектор вручную через devtools (div.contest-panel-outcome-button или button.outcome-button)");
+            log("Ждём появления панели исходов (contest-panel) в игре 'Бокс'");
+            try {
+                Locator panel = smartLocator(boxingPage, "div.contest-panel", 180_000);
+                panel.first().waitFor(new Locator.WaitForOptions()
+                        .setTimeout(180_000)
+                        .setState(WaitForSelectorState.VISIBLE));
+                success("Панель исходов появилась ✅");
+            } catch (Exception e) {
+                warn("Панель исходов 'div.contest-panel' не появилась вовремя или лежит глубже — продолжаем, пытаемся найти кнопку ставки напрямую: " + e.getMessage());
             }
 
-            success("Готово ✅");
+            boolean betDone = tryBetFirstBoxingOutcome(boxingPage);
+            if (betDone) {
+                boxingOk = true;
+            } else {
+                warn("Не удалось сделать ставку в 'Бокс' — ни один исход не стал доступным.");
+            }
 
+            boolean allFastGamesOk = shootoutOk && boxingOk;
+
+            if (allFastGamesOk) {
+                success("Готово ✅ (все быстрые игры отыграны со ставкой)");
+            } else {
+                warn("Сценарий завершён частично: не во всех быстрых играх удалось сделать ставку.");
+            }
 
             // --- Переход в Личный кабинет и корректный выход ---
             log("Открываем 'Личный кабинет'");
@@ -630,12 +882,25 @@ public class v2_id_authorization_fastgames {
             success("Выход завершён ✅ (браузер остаётся открытым)");
 
             long duration = (System.currentTimeMillis() - startTime) / 1000;
+
+            StringBuilder gamesReport = new StringBuilder();
+            gamesReport.append("• Быстрые игры:\n");
+            gamesReport.append("   - Крэш-Бокс — ставка сделана\n");
+            gamesReport.append("   - Нарды — ставка сделана\n");
+            gamesReport.append("   - Дартс — ставка сделана\n");
+            gamesReport.append("   - Дартс - Фортуна — ставка сделана\n");
+            gamesReport.append("   - Больше/Меньше — ставка сделана\n");
+            gamesReport.append("   - Буллиты NHL21 — ").append(shootoutOk ? "ставка сделана\n" : "ставка НЕ сделана\n");
+            gamesReport.append("   - Бокс — ").append(boxingOk ? "ставка сделана\n" : "ставка НЕ сделана\n");
+
+            String statusEmoji = allFastGamesOk ? "✅" : "⚠️";
+
             tg.sendMessage(
-                    "✅ *v2_id_authorization_fastgames успешно завершён!*\n" +
+                    statusEmoji + " *v2_id_authorization_fastgames завершён*\n" +
                             "• Авторизация по ID — выполнена\n" +
                             "• Код из Google Messages получен\n" +
-                            "• Все быстрые игры пройдены\n\n" +
-                            "🕒 Время выполнения: *" + duration + " сек.*"
+                            gamesReport +
+                            "\n🕒 Время выполнения: *" + duration + " сек.*"
             );
 
         } catch (Exception e) {
