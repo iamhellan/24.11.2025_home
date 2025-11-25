@@ -26,22 +26,10 @@ public class v2_promo {
     @BeforeAll
     static void setUpAll() {
         playwright = Playwright.create();
-
-        // --- полноэкранное окно ---
-        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int width = (int) screenSize.getWidth();
-        int height = (int) screenSize.getHeight();
-
-        List<String> args = List.of(
-                "--start-maximized",
-                "--window-size=" + width + "," + height
-        );
-
         browser = playwright.chromium().launch(
                 new BrowserType.LaunchOptions()
                         .setHeadless(false)
-                        .setSlowMo(150) // можно уменьшить/увеличить или убрать
-                        .setArgs(args)
+                        .setArgs(List.of("--start-maximized"))
         );
         context = browser.newContext(
                 new Browser.NewContextOptions()

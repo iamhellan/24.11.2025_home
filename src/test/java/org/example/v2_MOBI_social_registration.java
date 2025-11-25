@@ -238,32 +238,13 @@ public class v2_MOBI_social_registration {
         creds.load(new FileInputStream("src/test/resources/config.properties"));
 
         playwright = Playwright.create();
-
-        // --- полноэкранный мобильный браузер ---
-        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int width = (int) screenSize.getWidth();
-        int height = (int) screenSize.getHeight();
-
-        browser = playwright.chromium().launch(
-                new BrowserType.LaunchOptions()
-                        .setHeadless(false)
-                        .setSlowMo(150)
-                        .setArgs(List.of(
-                                "--start-maximized",
-                                "--window-size=" + width + "," + height
-                        ))
+        browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                .setHeadless(false)
+                .setArgs(List.of("--start-maximized"))
         );
-
-        context = browser.newContext(
-                new Browser.NewContextOptions()
-                        .setViewportSize(null)
-                        .setUserAgent(
-                                "Mozilla/5.0 (Linux; Android 11; SM-G998B) " +
-                                        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                                        "Chrome/95.0.4638.74 Mobile Safari/537.36"
-                        )
+        context = browser.newContext(new Browser.NewContextOptions()
+                .setViewportSize(null)
         );
-
         page = context.newPage();
         page.setDefaultTimeout(30_000);
     }

@@ -29,10 +29,8 @@ public class v2_MOBI_email_authorization {
                 .setHeadless(false)
                 .setArgs(List.of("--start-maximized"))
         );
-
-        context = browser.newContext(
-                new Browser.NewContextOptions()
-                        .setViewportSize(null)
+        context = browser.newContext(new Browser.NewContextOptions()
+                .setViewportSize(null)
         );
         page = context.newPage();
 

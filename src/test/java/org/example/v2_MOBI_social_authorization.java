@@ -25,15 +25,12 @@ public class v2_MOBI_social_authorization {
         creds.load(new FileInputStream("src/test/resources/config.properties"));
 
         playwright = Playwright.create();
-        browser = playwright.chromium().launch(
-                new BrowserType.LaunchOptions()
-                        .setHeadless(false)
-                        .setArgs(List.of("--start-maximized", "--disable-blink-features=AutomationControlled"))
+        browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                .setHeadless(false)
+                .setArgs(List.of("--start-maximized"))
         );
-
-        context = browser.newContext(
-                new Browser.NewContextOptions()
-                        .setViewportSize(null)
+        context = browser.newContext(new Browser.NewContextOptions()
+                .setViewportSize(null)
         );
         page = context.newPage();
 

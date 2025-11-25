@@ -26,32 +26,13 @@ public class v2_MOBI_promo {
     @BeforeAll
     static void setUpAll() {
         playwright = Playwright.create();
-
-        // --- Берём реальное разрешение экрана и создаём окно на весь экран ---
-        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int width = (int) screenSize.getWidth();
-        int height = (int) screenSize.getHeight();
-
-        List<String> args = List.of(
-                "--start-maximized",
-                "--window-size=" + width + "," + height
+        browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                .setHeadless(false)
+                .setArgs(List.of("--start-maximized"))
         );
-
-        browser = playwright.chromium().launch(
-                new BrowserType.LaunchOptions()
-                        .setHeadless(false)
-                        .setSlowMo(200) // 200 мс задержка между действиями
-                        .setArgs(args)
+        context = browser.newContext(new Browser.NewContextOptions()
+                .setViewportSize(null)
         );
-
-        context = browser.newContext(
-                new Browser.NewContextOptions()
-                        .setViewportSize(null) // используем размер окна браузера (во весь экран)
-                        .setUserAgent("Mozilla/5.0 (Linux; Android 11; SM-G998B) " +
-                                "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                                "Chrome/95.0.4638.74 Mobile Safari/537.36")
-        );
-
         mainPage = context.newPage();
         mainPage.setDefaultTimeout(30_000);
 

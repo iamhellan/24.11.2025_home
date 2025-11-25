@@ -30,11 +30,8 @@ public class v2_MOBI_id_authorization_and_bet {
                 .setHeadless(false)
                 .setArgs(List.of("--start-maximized"))
         );
-
-        // --- Основной контекст для мобильного сайта ---
-        context = browser.newContext(
-                new Browser.NewContextOptions()
-                        .setViewportSize(null)        // без ограничения окна
+        context = browser.newContext(new Browser.NewContextOptions()
+                .setViewportSize(null)
         );
         page = context.newPage();
 
@@ -67,7 +64,10 @@ public class v2_MOBI_id_authorization_and_bet {
 // --- Telegram: сообщение о старте теста ---
         String startMsg = "🚀 *Тест v2_MOBI_id_authorization_and_bet* стартовал " +
                 "(авторизация через Google Messages)";
+// экранируем подчёркивания для Markdown
+        startMsg = startMsg.replace("_", "\\_");
         Telegram.send(startMsg, botToken, chatId);
+
         page.navigate("https://1xbet.kz/?platform_type=mobile");
 
         String login = creds.getProperty("login");
@@ -332,39 +332,68 @@ public class v2_MOBI_id_authorization_and_bet {
         String summary = "✅ *Тест успешно завершён:* v2_MOBI_id_authorization_and_bet\n"
                 + "• Авторизация — выполнена\n"
                 + "• Ставка — успешно сделана\n"
-                + "• № Ставки — *" + betNumber + "*\n"
+                + "• № Ставки: `" + betNumber + "`\n"
                 + "• История — проверена\n"
                 + "• Выход — произведён\n\n"
-                + "🕒 Время выполнения: *" + duration + " сек.*\n"
-                + "🌐 Сайт: [1xbet.kz](https://1xbet.kz)\n"
-                + "_Браузер остаётся открытым для ручной проверки._";
+                + "🕒 Время выполнения: " + duration + " сек.\n"
+                + "🌐 [1xbet.kz](https://1xbet.kz)";
+
+// ВАЖНО: экранируем подчёркивания, чтобы не ломать Markdown
+        summary = summary.replace("_", "\\_");
 
         System.out.println(summary);
         Telegram.send(summary, botToken, chatId);
-
-// Отправляем отчёт в Telegram
-        Telegram.send(summary, botToken, chatId);
     }
 
-    // --- Telegram Helper ---
+    // --- Telegram helper ---
     static class Telegram {
         static void send(String text, String botToken, String chatId) {
+            sendInternal(text, botToken, chatId, true);
+        }
+
+        private static void sendInternal(String text, String botToken, String chatId, boolean markdown) {
             try {
                 String url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
-                String data = "chat_id=" + chatId
-                        + "&text=" + java.net.URLEncoder.encode(text, "UTF-8")
-                        + "&parse_mode=Markdown";
-                java.net.http.HttpClient.newHttpClient().send(
-                        java.net.http.HttpRequest.newBuilder()
-                                .uri(java.net.URI.create(url))
-                                .header("Content-Type", "application/x-www-form-urlencoded")
-                                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(data))
-                                .build(),
-                        java.net.http.HttpResponse.BodyHandlers.discarding()
-                );
-                System.out.println("📨 Отчёт отправлен в Telegram");
+
+                StringBuilder data = new StringBuilder();
+                data.append("chat_id=").append(java.net.URLEncoder.encode(chatId, "UTF-8"))
+                        .append("&text=").append(java.net.URLEncoder.encode(text, "UTF-8"));
+                if (markdown) {
+                    data.append("&parse_mode=Markdown");
+                }
+
+                java.net.http.HttpResponse<String> resp =
+                        java.net.http.HttpClient.newHttpClient().send(
+                                java.net.http.HttpRequest.newBuilder()
+                                        .uri(java.net.URI.create(url))
+                                        .header("Content-Type", "application/x-www-form-urlencoded")
+                                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(data.toString()))
+                                        .build(),
+                                java.net.http.HttpResponse.BodyHandlers.ofString()
+                        );
+
+                if (resp.statusCode() != 200) {
+                    System.out.println("⚠️ Telegram HTTP " + resp.statusCode()
+                            + " / body: " + resp.body());
+                    if (markdown) {
+                        System.out.println("→ Повторяем без Markdown");
+                        // вторая попытка — без parse_mode
+                        sendInternal(text, botToken, chatId, false);
+                    }
+                } else {
+                    System.out.println("📨 Сообщение отправлено в Telegram ("
+                            + (markdown ? "Markdown" : "plain") + ")");
+                }
             } catch (Exception e) {
-                System.out.println("⚠️ Ошибка при отправке Telegram: " + e.getMessage());
+                String errMsg = e.getMessage() == null ? "null" : e.getMessage();
+                errMsg = errMsg.replace("_", "\\_");
+
+                String err = "❌ *Тест v2_MOBI_id_authorization_and_bet упал*\n"
+                        + "Сообщение: `" + errMsg + "`";
+
+                System.out.println(err);
+                Telegram.send(err, botToken, chatId);
+                throw new RuntimeException(e);
             }
         }
     }

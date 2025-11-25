@@ -50,20 +50,15 @@ public class v2_id_authorization_fastgames {
     @BeforeAll
     static void setUpAll() {
         playwright = Playwright.create();
-
         browser = playwright.chromium().launch(
                 new BrowserType.LaunchOptions()
                         .setHeadless(false)
-                        .setArgs(java.util.List.of(
-                                "--start-maximized",
-                                "--window-size=1920,1080"
-                        ))
+                        .setArgs(List.of("--start-maximized"))
         );
-
-        Browser.NewContextOptions options = new Browser.NewContextOptions()
-                .setViewportSize(null); // во весь экран
-
-        context = browser.newContext(options);
+        context = browser.newContext(
+                new Browser.NewContextOptions()
+                        .setViewportSize(null)
+        );
         page = context.newPage();
 
         // --- Telegram ---

@@ -63,7 +63,6 @@ public class v2_phone_registration {
         );
         context = browser.newContext(
                 new Browser.NewContextOptions()
-                        .setAcceptDownloads(true)
                         .setViewportSize(null)
         );
         page = context.newPage();
